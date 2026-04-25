@@ -1,0 +1,36 @@
+{
+  "name": "amp-liquidation",
+  "version": "1.0.0",
+  "description": "One-shot automation to liquidate 4 sealed AMP-Kohler units",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "analyze": "ts-node src/index.ts analyze",
+    "copy": "ts-node src/index.ts copy",
+    "ebay:dry": "ts-node src/index.ts ebay:dry",
+    "ebay:publish": "ts-node src/index.ts ebay:publish",
+    "ebay:end": "ts-node src/index.ts ebay:end",
+    "stripe:links": "ts-node src/index.ts stripe:links",
+    "gmail:filters": "ts-node src/index.ts gmail:filters",
+    "lead:poll": "ts-node src/index.ts lead:poll"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@linear/sdk": "^27.0.0",
+    "@types/express": "^5.0.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.18.0",
+    "form-data": "^4.0.0",
+    "googleapis": "^144.0.0",
+    "sharp": "^0.33.0",
+    "stripe": "^17.0.0",
+    "xml2js": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/xml2js": "^0.4.14",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.4.0"
+  }
+}

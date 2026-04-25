@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Unit } from '../config/units';
+import { extractText, getAnthropicModel, stripCodeFences } from './anthropic-utils';
 
 export interface PhotoMetadata {
   slug: string;
@@ -62,7 +63,7 @@ export async function analyzePhotos(unit: Unit, photosDir: string): Promise<Phot
   });
 
   const message = await client.messages.create({
-    model: 'claude-opus-4-5',
+    model: getAnthropicModel(),
     max_tokens: 1024,
     messages: [
       {
@@ -84,7 +85,7 @@ Respond ONLY with the JSON object, no markdown or extra text.`,
     ],
   });
 
-  const raw = (message.content[0] as { type: 'text'; text: string }).text;
+  const raw = stripCodeFences(extractText(message));
   try {
     const parsed = JSON.parse(raw) as {
       descriptions: string[];
@@ -96,7 +97,8 @@ Respond ONLY with the JSON object, no markdown or extra text.`,
       photoCount: imageFiles.length,
       ...parsed,
     };
-  } catch {
+  } catch (err) {
+    console.warn(`[analyze-photos] Failed to parse JSON response for ${unit.slug}:`, err);
     return {
       slug: unit.slug,
       photoCount: imageFiles.length,

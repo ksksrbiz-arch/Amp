@@ -8,8 +8,13 @@
   },
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "start": "ts-node src/index.ts",
-    "dev": "ts-node src/index.ts"
+    "dev": "ts-node src/index.ts",
+    "copy": "ts-node src/index.ts copy",
+    "ebay": "ts-node src/index.ts ebay",
+    "routing": "ts-node src/index.ts routing",
+    "poll": "ts-node src/index.ts poll"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

@@ -10,6 +10,15 @@ export interface UploadedImage {
   ebayUrl: string;
 }
 
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 /**
  * Uploads images to eBay's EPS (eBay Picture Services) using the Trading API.
  * Returns a list of hosted image URLs.
@@ -30,10 +39,10 @@ export async function uploadImages(
     const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
 <UploadSiteHostedPicturesRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials>
-    <eBayAuthToken>${tokens.accessToken}</eBayAuthToken>
+    <eBayAuthToken>${escapeXml(tokens.accessToken)}</eBayAuthToken>
   </RequesterCredentials>
-  <PictureName>${filename}</PictureName>
-  <PictureData contentType="${mimeType}">${base64}</PictureData>
+  <PictureName>${escapeXml(filename)}</PictureName>
+  <PictureData contentType="${escapeXml(mimeType)}">${base64}</PictureData>
 </UploadSiteHostedPicturesRequest>`;
 
     const response = await axios.post<string>(EBAY_EPS_URL, xmlBody, {

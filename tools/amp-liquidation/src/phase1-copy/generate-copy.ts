@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Unit } from '../config/units';
 import type { PhotoMetadata } from './analyze-photos';
+import { extractText, getAnthropicModel, stripCodeFences } from './anthropic-utils';
 
 export interface ChannelCopy {
   channel: string;
@@ -79,12 +80,12 @@ Respond with a JSON object:
 Respond ONLY with the JSON object, no markdown or extra text.`;
 
     const message = await client.messages.create({
-      model: 'claude-opus-4-5',
+      model: getAnthropicModel(),
       max_tokens: 2048,
       messages: [{ role: 'user', content: prompt }],
     });
 
-    const raw = (message.content[0] as { type: 'text'; text: string }).text;
+    const raw = stripCodeFences(extractText(message));
     try {
       const parsed = JSON.parse(raw) as { title: string; description: string; hashtags?: string[] };
       channelBundles.push({
@@ -94,7 +95,8 @@ Respond ONLY with the JSON object, no markdown or extra text.`;
         description: parsed.description,
         hashtags: parsed.hashtags,
       });
-    } catch {
+    } catch (err) {
+      console.warn(`[generate-copy] Failed to parse JSON response for ${unit.slug}/${channel}:`, err);
       channelBundles.push({
         channel,
         title: `${unit.brand} ${unit.model} – $${unit.targetPrice}`,

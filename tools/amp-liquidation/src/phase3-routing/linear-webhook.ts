@@ -41,7 +41,6 @@ ${emailBody ?? '(no body)'}`;
       projectId: process.env.LINEAR_PROJECT_ID || undefined,
       title: issueTitle,
       description: issueDescription,
-      labelIds: [],
     });
 
     const createdIssue = await issue.issue;
@@ -54,7 +53,7 @@ ${emailBody ?? '(no body)'}`;
   }
 });
 
-const PORT = process.env.PORT ?? 3001;
+const PORT = Number(process.env.PORT ?? 3001);
 
 export function startWebhookServer(): void {
   app.listen(PORT, () => {

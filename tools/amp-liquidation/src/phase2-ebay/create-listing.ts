@@ -7,7 +7,7 @@ const SELL_API_BASE = 'https://api.ebay.com/sell/inventory/v1';
 const SELL_OFFER_BASE = 'https://api.ebay.com/sell/inventory/v1/offer';
 
 const EBAY_MARKETPLACE_ID = 'EBAY_US';
-const EBAY_CATEGORY_ID = '80' ; // Heavy Equipment & Tools fallback; update to accurate category
+const EBAY_DEFAULT_CATEGORY_ID = '80'; // Heavy Equipment & Tools fallback; override via EBAY_CATEGORY_ID env var
 
 export interface EbayListingResult {
   inventoryItemKey: string;
@@ -72,7 +72,7 @@ export async function createListing(
       marketplaceId: EBAY_MARKETPLACE_ID,
       format: 'FIXED_PRICE',
       availableQuantity: 1,
-      categoryId: EBAY_CATEGORY_ID,
+      categoryId: process.env.EBAY_CATEGORY_ID ?? EBAY_DEFAULT_CATEGORY_ID,
       listingDescription: ebayCopy.description,
       listingPolicies: {
         fulfillmentPolicyId: process.env.EBAY_FULFILLMENT_POLICY_ID ?? '',

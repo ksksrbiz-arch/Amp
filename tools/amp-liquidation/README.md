@@ -34,10 +34,16 @@ npm install
 ## Running the automation
 
 ```bash
-npm start
+npm start            # run all phases (default: copy + ebay + routing)
+npm run copy         # Phase 1 only — generate AI copy bundles
+npm run ebay         # Phase 1 + Phase 2 (eBay listing for FOURFRONT)
+npm run routing      # Phase 3 — Stripe links, Gmail filters, webhook server
+npm run poll         # Poll Gmail once and forward leads to the webhook
+npm run typecheck    # TypeScript type-check (no build output)
 ```
 
-This runs all phases in sequence:
+Each phase will skip itself with a warning if its required env vars are missing,
+so you can run partial workflows safely.
 
 ### Phase 1 — AI Copy Generation
 - Analyzes photos in `photos/<slug>/` using Anthropic Claude vision
@@ -51,10 +57,10 @@ This runs all phases in sequence:
 - Publishes the offer (listing goes live)
 
 ### Phase 3 — Lead Routing
-- Creates Stripe payment links for all 4 units
-- Creates Gmail filters to label inbound inquiries by unit
+- Creates Stripe payment links for all 4 units (idempotent on slug — safe to re-run)
+- Creates Gmail filters to label inbound inquiries by unit (idempotent — won't duplicate)
 - Starts an Express webhook server on port 3001 for Linear issue creation
-- (optional) Run `gmail-poller` on a cron to forward Gmail leads to Linear
+- Run `npm run poll` on a cron (e.g. every 5 min) to forward Gmail leads to the webhook
 
 ---
 

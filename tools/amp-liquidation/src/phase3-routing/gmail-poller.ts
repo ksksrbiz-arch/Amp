@@ -14,6 +14,15 @@ export interface GmailMessage {
  * and forwards each to the Linear webhook.
  */
 export async function pollGmail(webhookUrl: string): Promise<void> {
+  if (
+    !process.env.GMAIL_CLIENT_ID ||
+    !process.env.GMAIL_CLIENT_SECRET ||
+    !process.env.GMAIL_REFRESH_TOKEN
+  ) {
+    console.warn('[gmail-poller] Gmail credentials missing — skipping poll.');
+    return;
+  }
+
   const oauth2Client = new google.auth.OAuth2(
     process.env.GMAIL_CLIENT_ID,
     process.env.GMAIL_CLIENT_SECRET
@@ -21,6 +30,14 @@ export async function pollGmail(webhookUrl: string): Promise<void> {
   oauth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
 
   const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+
+  // Cache labelId -> name once so we don't query per-message
+  const labelsRes = await gmail.users.labels.list({ userId: 'me' });
+  const labelNamesById = new Map<string, string>(
+    (labelsRes.data.labels ?? [])
+      .filter((l): l is { id: string; name: string } => Boolean(l.id && l.name))
+      .map((l) => [l.id, l.name])
+  );
 
   // Fetch unread messages in the AMP-Liquidation/* labels
   const listRes = await gmail.users.messages.list({
@@ -46,11 +63,10 @@ export async function pollGmail(webhookUrl: string): Promise<void> {
     const from = headers.find((h) => h.name?.toLowerCase() === 'from')?.value ?? '(unknown)';
     const labels = full.data.labelIds ?? [];
 
-    // Detect slug from label name
+    // Detect slug from cached label names
     let slug: string | undefined;
     for (const labelId of labels) {
-      const labelRes = await gmail.users.labels.get({ userId: 'me', id: labelId });
-      const name = labelRes.data.name ?? '';
+      const name = labelNamesById.get(labelId) ?? '';
       const match = /AMP-Liquidation\/(\w+)/.exec(name);
       if (match) {
         slug = match[1];

@@ -1,131 +1,110 @@
 import Anthropic from '@anthropic-ai/sdk';
-import fs from 'fs';
-import path from 'path';
-import { UNITS, Unit } from '../config/units';
+import * as fs from 'fs';
+import * as path from 'path';
+import type { Unit } from '../config/units';
+import { extractText, getAnthropicModel, stripCodeFences } from './anthropic-utils';
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-export interface PhotoAnalysis {
-  image_count: number;
-  best_hero_index: number;
-  shows_serial: boolean;
-  shows_factory_seal: boolean;
-  condition_visible: 'sealed' | 'open-box' | 'used' | 'unclear';
-  missing_shots: string[];
-  honest_callouts: string[];
+export interface PhotoMetadata {
+  slug: string;
+  photoCount: number;
+  descriptions: string[];
+  condition: string;
+  notableDetails: string[];
 }
 
-async function analyzeUnit(unit: Unit): Promise<PhotoAnalysis> {
-  const photoDir = path.resolve(process.cwd(), 'photos', unit.slug);
-  if (!fs.existsSync(photoDir)) {
-    console.warn(`⚠️  No photos directory found for ${unit.slug}: ${photoDir}`);
+/**
+ * Uses Anthropic vision to analyze photos for a given unit and return
+ * structured metadata about the item's condition and appearance.
+ */
+export async function analyzePhotos(unit: Unit, photosDir: string): Promise<PhotoMetadata> {
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+  const unitPhotoDir = path.join(photosDir, unit.slug);
+
+  if (!fs.existsSync(unitPhotoDir)) {
+    console.warn(`[analyze-photos] No photos directory found for ${unit.slug}, skipping vision analysis.`);
     return {
-      image_count: 0,
-      best_hero_index: 0,
-      shows_serial: false,
-      shows_factory_seal: false,
-      condition_visible: 'unclear',
-      missing_shots: ['all photos'],
-      honest_callouts: [],
+      slug: unit.slug,
+      photoCount: 0,
+      descriptions: [],
+      condition: 'New/Sealed (no photos analyzed)',
+      notableDetails: ['Unit is sealed in original packaging'],
     };
   }
 
   const imageFiles = fs
-    .readdirSync(photoDir)
-    .filter((f) => /\.(jpg|jpeg|png|webp)$/i.test(f))
-    .sort();
+    .readdirSync(unitPhotoDir)
+    .filter((f) => /\.(jpe?g|png|webp)$/i.test(f))
+    .map((f) => path.join(unitPhotoDir, f));
 
   if (imageFiles.length === 0) {
-    console.warn(`⚠️  No image files found for ${unit.slug}`);
+    console.warn(`[analyze-photos] No images found for ${unit.slug}, skipping vision analysis.`);
     return {
-      image_count: 0,
-      best_hero_index: 0,
-      shows_serial: false,
-      shows_factory_seal: false,
-      condition_visible: 'unclear',
-      missing_shots: ['all photos'],
-      honest_callouts: [],
+      slug: unit.slug,
+      photoCount: 0,
+      descriptions: [],
+      condition: 'New/Sealed (no photos analyzed)',
+      notableDetails: ['Unit is sealed in original packaging'],
     };
   }
 
-  const imageContent: Anthropic.ImageBlockParam[] = imageFiles.map((file) => {
-    const filePath = path.join(photoDir, file);
-    const data = fs.readFileSync(filePath);
-    const ext = path.extname(file).toLowerCase().replace('.', '');
-    const mediaType =
-      ext === 'jpg' || ext === 'jpeg'
-        ? 'image/jpeg'
-        : ext === 'png'
-        ? 'image/png'
-        : 'image/webp';
+  const imageContent: Anthropic.ImageBlockParam[] = imageFiles.slice(0, 10).map((filePath) => {
+    const ext = path.extname(filePath).toLowerCase().replace('.', '');
+    const mediaType = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'png' ? 'image/png' : 'image/webp';
+    const base64 = fs.readFileSync(filePath).toString('base64');
     return {
       type: 'image',
       source: {
         type: 'base64',
         media_type: mediaType as 'image/jpeg' | 'image/png' | 'image/webp',
-        data: data.toString('base64'),
+        data: base64,
       },
     };
   });
 
-  const promptText: Anthropic.TextBlockParam = {
-    type: 'text',
-    text: `You are inspecting product photos for a liquidation listing of a ${unit.brand} ${unit.model}. Return JSON only:
-
-{
-  "image_count": number,
-  "best_hero_index": number,
-  "shows_serial": boolean,
-  "shows_factory_seal": boolean,
-  "condition_visible": "sealed" | "open-box" | "used" | "unclear",
-  "missing_shots": string[],
-  "honest_callouts": string[]
-}`,
-  };
-
-  const response = await client.messages.create({
-    model: 'claude-opus-4-7',
+  const message = await client.messages.create({
+    model: getAnthropicModel(),
     max_tokens: 1024,
     messages: [
       {
         role: 'user',
-        content: [...imageContent, promptText],
+        content: [
+          ...imageContent,
+          {
+            type: 'text',
+            text: `These are photos of a ${unit.brand} ${unit.model} (model ${unit.modelNumber}).
+Please analyze the photos and respond with a JSON object containing:
+- "descriptions": array of 1–2 sentence descriptions per photo
+- "condition": overall condition assessment (e.g. "New in box", "Open box – unused", "Used – excellent condition")
+- "notableDetails": array of notable visual details (scratches, missing parts, sealed packaging, etc.)
+
+Respond ONLY with the JSON object, no markdown or extra text.`,
+          },
+        ],
       },
     ],
   });
 
-  const text = response.content.find((b) => b.type === 'text')?.text ?? '{}';
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error(`No JSON in response for ${unit.slug}`);
-  return JSON.parse(jsonMatch[0]) as PhotoAnalysis;
-}
-
-export async function analyzeAllPhotos(): Promise<void> {
-  const outputDir = path.resolve(process.cwd(), 'output');
-  fs.mkdirSync(outputDir, { recursive: true });
-
-  let allOk = true;
-
-  for (const unit of UNITS) {
-    console.log(`\n📸 Analyzing photos for ${unit.slug}...`);
-    const analysis = await analyzeUnit(unit);
-
-    const outPath = path.join(outputDir, `${unit.slug}-photo-analysis.json`);
-    fs.writeFileSync(outPath, JSON.stringify(analysis, null, 2));
-    console.log(`✅ Saved ${outPath}`);
-
-    if (analysis.missing_shots.length > 0) {
-      console.warn(`⚠️  Missing shots for ${unit.slug}: ${analysis.missing_shots.join(', ')}`);
-      allOk = false;
-    }
-    if (analysis.honest_callouts.length > 0) {
-      console.log(`ℹ️  Callouts for ${unit.slug}: ${analysis.honest_callouts.join('; ')}`);
-    }
-  }
-
-  if (!allOk) {
-    console.warn('\n⚠️  Some units have missing shots. Re-shoot before continuing to copy generation.');
-  } else {
-    console.log('\n✅ All photo analyses complete. No missing shots.');
+  const raw = stripCodeFences(extractText(message));
+  try {
+    const parsed = JSON.parse(raw) as {
+      descriptions: string[];
+      condition: string;
+      notableDetails: string[];
+    };
+    return {
+      slug: unit.slug,
+      photoCount: imageFiles.length,
+      ...parsed,
+    };
+  } catch (err) {
+    console.warn(`[analyze-photos] Failed to parse JSON response for ${unit.slug}:`, err);
+    return {
+      slug: unit.slug,
+      photoCount: imageFiles.length,
+      descriptions: [raw],
+      condition: 'See photos',
+      notableDetails: [],
+    };
   }
 }

@@ -1,126 +1,168 @@
-# AMP-Kohler Liquidation Tool — Runbook
+# AMP-Kohler Liquidation — Runbook
 
 **Owner:** Keith J. Skaggs Jr. / 1Commerce LLC  
-**Goal:** One-shot automation to liquidate 4 sealed AMP-Kohler units via eBay (FOURFRONT only) + copy-paste bundles for FB/CL/OfferUp/Mercari.
+**Goal:** One-shot automation to liquidate 4 sealed AMP-Kohler units:  
+- eBay (FOURFRONT 9250 only) + manual-paste copy for FB/CL/OfferUp/Mercari (all 4 units)  
+- Lead routing into Linear via Gmail filters + Netlify Function  
+**Target:** Listings live within 90 minutes of photos being available.
 
 ---
 
-## Prerequisites
+## Pre-flight checklist
 
-1. Node.js 20+
-2. All 4 API keys (Anthropic, eBay, Gmail, Linear, Stripe) — see `.env.example`
-3. Photos in `photos/{slug}/` directories (JPG/PNG/WebP)
-4. eBay account: fulfillment policy with `LOCAL_PICKUP` option, merchant location set to Canby OR (ZIP 97013)
+- [ ] Copy `.env.example` → `.env` and fill in all values
+- [ ] Obtain eBay OAuth2 tokens (see [eBay token instructions](#ebay-tokens))
+- [ ] Set up Gmail OAuth2 credentials (Google Cloud Console)
+- [ ] Create Linear project "AMP Liquidation" and paste the project ID into `.env`
+- [ ] Create Stripe account + secret key
+- [ ] Drop photos into `photos/<slug>/` directories (JPEG or PNG, max 10 per unit)
+
+---
 
 ## Setup
 
 ```bash
 cd tools/amp-liquidation
-npm install
 cp .env.example .env
-# Fill in all API keys in .env
+# fill in .env
+
+npm install
 ```
-
-## Phase 1 — Copy Generation (~15 min)
-
-```bash
-# Drop photos into photos/{compressor,pump,generator,fourfront}/
-npm run analyze   # Vision analysis — fix any missing_shots warnings before continuing
-npm run copy      # Generate per-channel copy bundles → output/{slug}.md
-```
-
-Open `output/{slug}.md` for each unit and paste into the respective platforms.
-
-**Email aliases to use in each listing:**
-| Unit | Channel | Email |
-|------|---------|-------|
-| compressor | fb | keith+amp-compressor-fb@1commercesolutions.com |
-| compressor | cl | keith+amp-compressor-cl@1commercesolutions.com |
-| compressor | offerup | keith+amp-compressor-offerup@1commercesolutions.com |
-| compressor | mercari | keith+amp-compressor-mercari@1commercesolutions.com |
-| pump | fb | keith+amp-pump-fb@1commercesolutions.com |
-| pump | cl | keith+amp-pump-cl@1commercesolutions.com |
-| pump | offerup | keith+amp-pump-offerup@1commercesolutions.com |
-| pump | mercari | keith+amp-pump-mercari@1commercesolutions.com |
-| generator | fb | keith+amp-generator-fb@1commercesolutions.com |
-| generator | cl | keith+amp-generator-cl@1commercesolutions.com |
-| generator | offerup | keith+amp-generator-offerup@1commercesolutions.com |
-| generator | mercari | keith+amp-generator-mercari@1commercesolutions.com |
-| fourfront | ebay | keith+amp-fourfront-ebay@1commercesolutions.com |
-| fourfront | fb | keith+amp-fourfront-fb@1commercesolutions.com |
-| fourfront | cl | keith+amp-fourfront-cl@1commercesolutions.com |
-
-## Phase 2 — eBay Listing (FOURFRONT 9250 only, ~10 min)
-
-```bash
-npm run ebay:dry      # Creates inventory item + offer, no public listing yet
-                      # Verify in eBay Seller Hub > Inventory
-npm run ebay:publish  # Goes live — listing URL printed to stdout
-```
-
-To end the listing later:
-```bash
-npm run ebay:end
-```
-
-## Phase 3 — Lead Routing (~5 min setup)
-
-### One-time setup
-
-```bash
-npm run stripe:links  # Creates 4 Stripe payment links → output/payment-links.json
-npm run gmail:filters # Creates Gmail labels + filters (requires Gmail OAuth)
-```
-
-### Deploy Netlify Function
-
-The `netlify/functions/amp-lead.ts` function receives lead payloads and creates Linear issues.
-
-Deploy to your existing `1commercesolutions.com` Netlify site:
-```bash
-# Set these env vars in Netlify dashboard:
-# LINEAR_API_KEY, LINEAR_TEAM_ID, LINEAR_PROJECT_ID, STRIPE_SECRET_KEY
-```
-
-Set `LEAD_INTAKE_URL=https://1commercesolutions.com/api/amp-lead` in your `.env`.
-
-### Run the Gmail poller (30-day window)
-
-```bash
-# In a tmux/screen session:
-npm run lead:poll
-```
-
-This polls Gmail every 60s for messages tagged `Label_Webhook_Pending` and forwards them to your Netlify function.
-
-**Note:** You must create a Gmail filter (or Apps Script) that adds `Label_Webhook_Pending` to all inbound `keith+amp-*@` mail. The `npm run gmail:filters` command handles the per-unit labels; the pending-label filter must be added manually in Gmail settings or via an Apps Script trigger.
 
 ---
 
-## Hard Rules
+## Running the automation
 
-- **No** browser automation for FB/CL/OfferUp/Mercari. Copy-paste only.
-- **No** photo uploads to platforms outside eBay. Upload manually from `photos/{slug}/`.
-- All API keys in `.env`, never logged, never committed.
-- Stripe payment links stay active until manually deactivated.
+```bash
+npm start            # run all phases (default: copy + ebay + routing)
+npm run copy         # Phase 1 only — generate AI copy bundles
+npm run ebay         # Phase 1 + Phase 2 (eBay listing for FOURFRONT)
+npm run routing      # Phase 3 — Stripe links, Gmail filters, webhook server
+npm run poll         # Poll Gmail once and forward leads to the webhook
+npm run typecheck    # TypeScript type-check (no build output)
+```
 
-## Linear Issue Priorities
+Each phase will skip itself with a warning if its required env vars are missing,
+so you can run partial workflows safely.
 
-| Unit | Priority |
-|------|----------|
-| FOURFRONT 9250 | Urgent (1) |
-| Generator | High (2) |
-| Compressor | Medium (3) |
-| Pump | Medium (3) |
+### Phase 1 — AI Copy Generation
+- Analyzes photos in `photos/<slug>/` using Anthropic Claude vision
+- Generates per-channel marketing copy for each unit
+- Writes markdown bundles to `output/<slug>.md`
+
+### Phase 2 — eBay Automation (FOURFRONT only)
+- Refreshes eBay OAuth2 token
+- Uploads photos to eBay EPS (eBay Picture Services)
+- Creates an eBay Sell API inventory item + offer
+- Publishes the offer (listing goes live)
+
+### Phase 3 — Lead Routing
+- Creates Stripe payment links for all 4 units (idempotent on slug — safe to re-run)
+- Creates Gmail filters to label inbound inquiries by unit (idempotent — won't duplicate)
+- Starts an Express webhook server on port 3001 for Linear issue creation
+- Run `npm run poll` on a cron (e.g. every 5 min) to forward Gmail leads to the webhook
 
 ---
 
-## Troubleshooting
+## Manual paste channels (FB / CL / OfferUp / Mercari)
 
-**`analyze` warns about missing shots:** Re-shoot the missing angles and re-run.
+After Phase 1 completes, open `output/<slug>.md` for each unit and copy the
+per-channel section into the respective platform's listing form.
 
-**eBay pre-flight fails on fulfillment policy:** In eBay Seller Hub > Shipping > Business policies, create a freight policy with LOCAL_PICKUP option, paste the policy ID into `.env`.
+---
 
-**eBay pre-flight fails on merchant location:** In eBay Seller Hub > Shipping > Business locations, add Canby OR 97013 with key `canby-or-primary`.
+## eBay tokens
 
-**Gmail poller not finding messages:** Ensure `Label_Webhook_Pending` label exists and is applied to inbound `keith+amp-*` mail.
+1. Register an eBay developer account at https://developer.ebay.com
+2. Create a production application and note `EBAY_APP_ID`, `EBAY_DEV_ID`, `EBAY_CERT_ID`
+3. Set `EBAY_RUNAME` to the RuName for your OAuth2 redirect URI
+4. Complete the OAuth2 Authorization Code flow to obtain `EBAY_USER_TOKEN` and `EBAY_REFRESH_TOKEN`
+5. Required scope: `https://api.ebay.com/oauth/api_scope/sell.inventory`
+
+The tool automatically refreshes the access token at runtime via `phase2-ebay/auth.ts`.
+
+---
+
+## Gmail OAuth2
+
+1. Go to Google Cloud Console → APIs & Services → Credentials
+2. Create an OAuth2 client (Desktop app type)
+3. Enable the Gmail API
+4. Complete the OAuth2 flow once to obtain `GMAIL_REFRESH_TOKEN`
+5. Paste `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` into `.env`
+
+---
+
+## Netlify Function — `amp-lead`
+
+`tools/amp-liquidation/netlify/functions/amp-lead.ts` receives lead payloads
+forwarded from Gmail (alias-based routing) and:
+1. Creates a Linear issue with the appropriate priority for the unit
+2. Looks up (or creates) a Stripe payment link for the unit
+3. Returns `{ issueUrl, paymentLink }`
+
+Set the following environment variables in Netlify:
+- `LINEAR_API_KEY`
+- `LINEAR_TEAM_ID`
+- `LINEAR_PROJECT_ID`
+- `STRIPE_SECRET_KEY`
+
+The function endpoint will be:
+```
+POST https://<your-site>.netlify.app/.netlify/functions/amp-lead
+```
+
+Body (JSON):
+```json
+{
+  "from": "buyer@example.com",
+  "subject": "Is the generator still available?",
+  "body": "Hi — I'd like to come pick this up this weekend.",
+  "toAlias": "amp-generator-fb@1commercesolutions.com"
+}
+```
+
+The function parses `toAlias` to extract `<unit>` and `<channel>` from
+`amp-<unit>-<channel>@…`, so set up Gmail aliases or `+`-tags accordingly.
+
+---
+
+## Unit reference
+
+| Slug | Model | MSRP | Target | Floor | eBay? |
+|------|-------|------|--------|-------|-------|
+| compressor | AKAC120 – 8-Gal Twin Tank Gas Compressor | $1,599 | $899 | $640 | No |
+| pump | AKWP30 – 3" Semi-Trash Water Pump | $975 | $599 | $390 | No |
+| generator | AK10KRS – 10,000W Portable Gas Generator | $3,250 | $1,895 | $1,300 | No |
+| fourfront | FOURFRONT 9250 – 4-in-1 | $13,795 | $6,500 | $4,800 | **Yes** |
+
+---
+
+## Directory layout
+
+```
+tools/amp-liquidation/
+├── .env.example
+├── .gitignore
+├── package.json
+├── tsconfig.json
+├── README.md
+└── src/
+    ├── config/
+    │   └── units.ts
+    ├── phase1-copy/
+    │   ├── analyze-photos.ts
+    │   ├── generate-copy.ts
+    │   └── render-bundle.ts
+    ├── phase2-ebay/
+    │   ├── auth.ts
+    │   ├── upload-images.ts
+    │   ├── create-listing.ts
+    │   └── publish.ts
+    ├── phase3-routing/
+    │   ├── stripe-link.ts
+    │   ├── gmail-filters.ts
+    │   ├── linear-webhook.ts
+    │   └── gmail-poller.ts
+    └── index.ts
+```

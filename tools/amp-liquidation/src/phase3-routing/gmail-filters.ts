@@ -1,92 +1,94 @@
 import { google } from 'googleapis';
-import { UNITS, Unit } from '../config/units';
+import type { Unit } from '../config/units';
 
-function getGmailClient() {
+/**
+ * Creates Gmail filters so that inbound inquiries for each unit are
+ * automatically labeled and forwarded as needed.
+ *
+ * Idempotent: skips creating filters that already match the same query +
+ * label, so re-running the script does not create duplicates.
+ */
+export async function createGmailFilters(units: Unit[]): Promise<void> {
+  if (
+    !process.env.GMAIL_CLIENT_ID ||
+    !process.env.GMAIL_CLIENT_SECRET ||
+    !process.env.GMAIL_REFRESH_TOKEN
+  ) {
+    console.warn('[gmail-filters] Gmail credentials missing — skipping filter creation.');
+    return;
+  }
+
   const oauth2Client = new google.auth.OAuth2(
     process.env.GMAIL_CLIENT_ID,
-    process.env.GMAIL_CLIENT_SECRET,
-    'https://developers.google.com/oauthplayground'
+    process.env.GMAIL_CLIENT_SECRET
   );
-  oauth2Client.setCredentials({
-    refresh_token: process.env.GMAIL_REFRESH_TOKEN,
-  });
-  return google.gmail({ version: 'v1', auth: oauth2Client });
-}
 
-function channelsForUnit(unit: Unit): string[] {
-  return unit.channels;
-}
+  oauth2Client.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
 
-export async function createGmailFilters(): Promise<void> {
-  const gmail = getGmailClient();
+  const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
-  // Ensure AMP-Liquidation label exists
-  let ampLabelId: string;
-  try {
-    const labelsResp = await gmail.users.labels.list({ userId: 'me' });
-    const existing = labelsResp.data.labels?.find((l) => l.name === 'AMP-Liquidation');
-    if (existing?.id) {
-      ampLabelId = existing.id;
-      console.log(`✅ Found existing label AMP-Liquidation: ${ampLabelId}`);
-    } else {
-      const created = await gmail.users.labels.create({
-        userId: 'me',
-        requestBody: { name: 'AMP-Liquidation', labelListVisibility: 'labelShow', messageListVisibility: 'show' },
-      });
-      ampLabelId = created.data.id!;
-      console.log(`✅ Created label AMP-Liquidation: ${ampLabelId}`);
-    }
-  } catch (err) {
-    throw new Error(`Failed to get/create AMP-Liquidation label: ${String(err)}`);
-  }
+  // Fetch existing filters once so we can de-dupe by criteria
+  const existingFilters = (await gmail.users.settings.filters.list({ userId: 'me' })).data.filter ?? [];
+  const existingLabels = (await gmail.users.labels.list({ userId: 'me' })).data.labels ?? [];
 
-  for (const unit of UNITS) {
-    for (const channel of channelsForUnit(unit)) {
-      const alias = `keith+amp-${unit.slug}-${channel}@1commercesolutions.com`;
-      const labelName = `AMP_${unit.slug}_${channel}`;
+  for (const unit of units) {
+    const labelName = `AMP-Liquidation/${unit.slug}`;
 
-      // Create per-channel label
-      let channelLabelId: string;
+    // Find or create the label
+    let labelId: string | null = existingLabels.find((l) => l.name === labelName)?.id ?? null;
+
+    if (!labelId) {
       try {
-        const labelsResp = await gmail.users.labels.list({ userId: 'me' });
-        const existing = labelsResp.data.labels?.find((l) => l.name === labelName);
-        if (existing?.id) {
-          channelLabelId = existing.id;
-        } else {
-          const created = await gmail.users.labels.create({
-            userId: 'me',
-            requestBody: { name: labelName, labelListVisibility: 'labelShow', messageListVisibility: 'show' },
-          });
-          channelLabelId = created.data.id!;
-        }
-      } catch (err) {
-        console.warn(`⚠️  Could not create label ${labelName}: ${String(err)}`);
-        channelLabelId = ampLabelId;
-      }
-
-      // Create filter
-      try {
-        await gmail.users.settings.filters.create({
+        const labelRes = await gmail.users.labels.create({
           userId: 'me',
           requestBody: {
-            criteria: { to: alias },
-            action: {
-              addLabelIds: [channelLabelId, ampLabelId],
-            },
+            name: labelName,
+            labelListVisibility: 'labelShow',
+            messageListVisibility: 'show',
           },
         });
-        console.log(`✅ Filter created for ${alias}`);
+        labelId = labelRes.data.id ?? null;
+        console.log(`[gmail-filters] Created label: ${labelName} (${labelId})`);
       } catch (err) {
-        console.warn(`⚠️  Filter for ${alias} may already exist: ${String(err)}`);
+        console.warn(`[gmail-filters] Failed to create label for ${unit.slug}:`, err);
       }
+    } else {
+      console.log(`[gmail-filters] Using existing label: ${labelName} (${labelId})`);
     }
-  }
 
-  console.log('\n✅ All Gmail filters created.');
-  console.log('\nEmail aliases to use in listings:');
-  for (const unit of UNITS) {
-    for (const channel of channelsForUnit(unit)) {
-      console.log(`  ${unit.slug}/${channel}: keith+amp-${unit.slug}-${channel}@1commercesolutions.com`);
+    if (!labelId) {
+      console.warn(`[gmail-filters] No label id for ${unit.slug}, skipping filter.`);
+      continue;
     }
+
+    // Create a filter matching subject keywords (de-duped)
+    const keywords = [unit.model, unit.modelNumber].map((k) => `"${k}"`).join(' OR ');
+
+    const alreadyExists = existingFilters.some(
+      (f) =>
+        f.criteria?.query === keywords &&
+        f.action?.addLabelIds?.includes(labelId as string)
+    );
+
+    if (alreadyExists) {
+      console.log(`[gmail-filters] Filter already exists for ${unit.slug}, skipping.`);
+      continue;
+    }
+
+    await gmail.users.settings.filters.create({
+      userId: 'me',
+      requestBody: {
+        criteria: {
+          query: keywords,
+          to: process.env.GMAIL_USER,
+        },
+        action: {
+          addLabelIds: [labelId],
+          removeLabelIds: ['INBOX'],
+        },
+      },
+    });
+
+    console.log(`[gmail-filters] Filter created for ${unit.slug} matching: ${keywords}`);
   }
 }

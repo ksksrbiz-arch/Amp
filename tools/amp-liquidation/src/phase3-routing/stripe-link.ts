@@ -1,64 +1,67 @@
 import Stripe from 'stripe';
-import fs from 'fs';
-import path from 'path';
-import { UNITS } from '../config/units';
+import type { Unit } from '../config/units';
 
-interface PaymentLinks {
-  [slug: string]: string;
+export interface StripePaymentLink {
+  slug: string;
+  url: string;
+  priceId: string;
 }
 
-export async function createPaymentLinks(): Promise<void> {
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-
-  const outputDir = path.resolve(process.cwd(), 'output');
-  fs.mkdirSync(outputDir, { recursive: true });
-
-  const linksPath = path.join(outputDir, 'payment-links.json');
-  const existing: PaymentLinks = fs.existsSync(linksPath)
-    ? (JSON.parse(fs.readFileSync(linksPath, 'utf8')) as PaymentLinks)
-    : {};
-
-  const links: PaymentLinks = { ...existing };
-
-  for (const unit of UNITS) {
-    if (links[unit.slug]) {
-      console.log(`⏭️  ${unit.slug}: already has payment link ${links[unit.slug]}`);
-      continue;
-    }
-
-    console.log(`💳 Creating Stripe payment link for ${unit.slug}...`);
-
-    const product = await stripe.products.create({
-      name: `${unit.brand} ${unit.modelNumber} — ${unit.model}`,
-      description: `Sealed new from factory. Local pickup Canby OR or buyer-arranged freight.`,
-      metadata: {
-        unit_slug: unit.slug,
-        msrp: String(unit.msrp),
-        serial: unit.serial ?? '',
-      },
-    });
-
-    const price = await stripe.prices.create({
-      product: product.id,
-      unit_amount: unit.targetPrice * 100,
-      currency: 'usd',
-    });
-
-    const link = await stripe.paymentLinks.create({
-      line_items: [{ price: price.id, quantity: 1 }],
-      after_completion: {
-        type: 'redirect',
-        redirect: { url: 'https://1commercesolutions.com/thanks-amp' },
-      },
-      metadata: { unit_slug: unit.slug },
-    });
-
-    links[unit.slug] = link.url;
-    console.log(`  ✅ ${unit.slug}: ${link.url}`);
-
-    // Save after each to avoid losing progress
-    fs.writeFileSync(linksPath, JSON.stringify(links, null, 2));
+/**
+ * Creates a Stripe Payment Link for each unit so buyers can pay a deposit
+ * or the full amount online before pickup.
+ *
+ * Idempotency: uses the unit slug as the Stripe `Idempotency-Key` so re-running
+ * the script does not create duplicate products / prices / payment links.
+ */
+export async function createStripeLinks(units: Unit[]): Promise<StripePaymentLink[]> {
+  if (!process.env.STRIPE_SECRET_KEY) {
+    console.warn('[stripe-link] STRIPE_SECRET_KEY not set — skipping Stripe payment-link creation.');
+    return [];
   }
 
-  console.log(`\n✅ Payment links saved to ${linksPath}`);
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+    apiVersion: '2025-02-24.acacia',
+  });
+
+  const links: StripePaymentLink[] = [];
+
+  for (const unit of units) {
+    const idempotencyKey = `amp-liquidation-${unit.slug}-v1`;
+
+    // Create a Stripe product (idempotent on slug)
+    const product = await stripe.products.create(
+      {
+        name: `${unit.brand} ${unit.model}`,
+        description: `Model: ${unit.modelNumber} | ${unit.engineSpec} | Local pickup – ${process.env.SELLER_LOCATION_ZIP ?? '97013'}`,
+        metadata: { slug: unit.slug, modelNumber: unit.modelNumber },
+      },
+      { idempotencyKey: `${idempotencyKey}-product` }
+    );
+
+    // Create a price (idempotent on slug)
+    const price = await stripe.prices.create(
+      {
+        product: product.id,
+        unit_amount: unit.targetPrice * 100,
+        currency: 'usd',
+        metadata: { slug: unit.slug },
+      },
+      { idempotencyKey: `${idempotencyKey}-price` }
+    );
+
+    // Create a payment link (idempotent on slug)
+    const paymentLink = await stripe.paymentLinks.create(
+      {
+        line_items: [{ price: price.id, quantity: 1 }],
+        metadata: { slug: unit.slug },
+      },
+      { idempotencyKey: `${idempotencyKey}-paymentlink` }
+    );
+
+    links.push({ slug: unit.slug, url: paymentLink.url, priceId: price.id });
+    console.log(`[stripe-link] Payment link for ${unit.slug}: ${paymentLink.url}`);
+  }
+
+  return links;
 }

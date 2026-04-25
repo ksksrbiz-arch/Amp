@@ -1,62 +1,64 @@
-/**
- * linear-webhook.ts
- * Express server stub — used only if not deploying to Netlify.
- * Normally replaced by netlify/functions/amp-lead.ts.
- */
 import express from 'express';
 import { LinearClient } from '@linear/sdk';
 
-export function startWebhookServer(port = 3001): void {
-  const app = express();
-  app.use(express.json());
+const app = express();
+app.use(express.json());
 
-  app.post('/lead', async (req, res) => {
-    const { from, subject, body, toAlias } = req.body as {
-      from?: string;
-      subject?: string;
-      body?: string;
-      toAlias?: string;
-    };
+/**
+ * POST /lead
+ * Body: { subject, from, body, slug }
+ *
+ * Creates a Linear issue for each inbound lead email.
+ * This endpoint is called by the gmail-poller or a Netlify Function.
+ */
+app.post('/lead', async (req, res) => {
+  const { subject, from, body: emailBody, slug } = req.body as {
+    subject?: string;
+    from?: string;
+    body?: string;
+    slug?: string;
+  };
 
-    if (!toAlias) {
-      res.status(400).json({ error: 'toAlias required' });
-      return;
-    }
+  if (!subject || !from) {
+    res.status(400).json({ error: 'subject and from are required' });
+    return;
+  }
 
-    const match = toAlias.match(/amp-(\w+)-(\w+)@/);
-    if (!match) {
-      res.status(200).json({ message: 'not an AMP lead' });
-      return;
-    }
-    const [, unit, channel] = match;
+  try {
+    const linear = new LinearClient({ apiKey: process.env.LINEAR_API_KEY ?? '' });
 
-    try {
-      const linear = new LinearClient({ apiKey: process.env.LINEAR_API_KEY! });
+    const issueTitle = `[${slug ?? 'amp'}] Lead: ${from} — ${subject}`;
+    const issueDescription = `**From:** ${from}
+**Subject:** ${subject}
+**Unit:** ${slug ?? 'unknown'}
 
-      const priorityMap: Record<string, number> = {
-        fourfront: 1,
-        generator: 2,
-        compressor: 3,
-        pump: 3,
-      };
+---
 
-      const issuePayload = await linear.createIssue({
-        teamId: process.env.LINEAR_TEAM_ID!,
-        projectId: process.env.LINEAR_PROJECT_ID!,
-        title: `[${unit.toUpperCase()}] Lead via ${channel} — ${from ?? 'unknown'}`,
-        description: `**Channel:** ${channel}\n**From:** ${from ?? ''}\n**Subject:** ${subject ?? ''}\n\n---\n\n${body ?? ''}`,
-        priority: priorityMap[unit] ?? 3,
-      });
+${emailBody ?? '(no body)'}`;
 
-      const createdIssue = await issuePayload.issue;
-      res.json({ issueUrl: createdIssue?.url });
-    } catch (err) {
-      console.error('Linear error:', err);
-      res.status(500).json({ error: String(err) });
-    }
-  });
+    const issue = await linear.createIssue({
+      teamId: process.env.LINEAR_TEAM_ID ?? '',
+      projectId: process.env.LINEAR_PROJECT_ID || undefined,
+      title: issueTitle,
+      description: issueDescription,
+    });
 
-  app.listen(port, () => {
-    console.log(`🚀 Webhook server listening on port ${port}`);
+    const createdIssue = await issue.issue;
+    console.log(`[linear-webhook] Issue created: ${createdIssue?.identifier} – ${issueTitle}`);
+
+    res.json({ ok: true, issueId: createdIssue?.id, identifier: createdIssue?.identifier });
+  } catch (err) {
+    console.error('[linear-webhook] Error creating Linear issue:', err);
+    res.status(500).json({ error: 'Failed to create Linear issue' });
+  }
+});
+
+const PORT = Number(process.env.PORT ?? 3001);
+
+export function startWebhookServer(): void {
+  app.listen(PORT, () => {
+    console.log(`[linear-webhook] Server listening on port ${PORT}`);
   });
 }
+
+export { app };

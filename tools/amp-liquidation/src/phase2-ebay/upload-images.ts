@@ -1,93 +1,71 @@
 import axios from 'axios';
-import fs from 'fs';
-import path from 'path';
-import sharp from 'sharp';
-import FormData from 'form-data';
-import xml2js from 'xml2js';
-import { PhotoAnalysis } from '../phase1-copy/analyze-photos';
-
-const MAX_DIMENSION = 1600;
-const JPEG_QUALITY = 85;
-const MAX_IMAGES = 24;
+import * as fs from 'fs';
+import * as path from 'path';
+import type { EbayTokens } from './auth';
 
 const EBAY_EPS_URL = 'https://api.ebay.com/ws/api.dll';
 
-async function resizeImage(inputPath: string): Promise<Buffer> {
-  return sharp(inputPath)
-    .resize(MAX_DIMENSION, MAX_DIMENSION, { fit: 'inside', withoutEnlargement: true })
-    .jpeg({ quality: JPEG_QUALITY })
-    .toBuffer();
+export interface UploadedImage {
+  localPath: string;
+  ebayUrl: string;
 }
 
-export async function uploadFourfrontImages(userToken: string): Promise<string[]> {
-  const photoDir = path.resolve(process.cwd(), 'photos', 'fourfront');
-  if (!fs.existsSync(photoDir)) {
-    throw new Error(`Photo directory not found: ${photoDir}`);
-  }
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 
-  let files = fs
-    .readdirSync(photoDir)
-    .filter((f) => /\.(jpg|jpeg|png|webp)$/i.test(f))
-    .sort();
+/**
+ * Uploads images to eBay's EPS (eBay Picture Services) using the Trading API.
+ * Returns a list of hosted image URLs.
+ */
+export async function uploadImages(
+  imagePaths: string[],
+  tokens: EbayTokens
+): Promise<UploadedImage[]> {
+  const results: UploadedImage[] = [];
 
-  // Reorder: hero first if we have analysis
-  const analysisPath = path.resolve(process.cwd(), 'output', 'fourfront-photo-analysis.json');
-  if (fs.existsSync(analysisPath)) {
-    const analysis: PhotoAnalysis = JSON.parse(fs.readFileSync(analysisPath, 'utf8'));
-    const heroFile = files[analysis.best_hero_index];
-    if (heroFile) {
-      files = [heroFile, ...files.filter((f) => f !== heroFile)];
-    }
-  }
+  for (const localPath of imagePaths) {
+    const filename = path.basename(localPath);
+    const imageData = fs.readFileSync(localPath);
+    const base64 = imageData.toString('base64');
+    const ext = path.extname(filename).toLowerCase().replace('.', '');
+    const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
 
-  files = files.slice(0, MAX_IMAGES);
-  console.log(`📷 Uploading ${files.length} images to eBay EPS...`);
-
-  const urls: string[] = [];
-
-  for (const file of files) {
-    const filePath = path.join(photoDir, file);
-    const imageBuffer = await resizeImage(filePath);
-
-    const form = new FormData();
-    form.append('image', imageBuffer, { filename: file, contentType: 'image/jpeg' });
-
-    const xmlRequest = `<?xml version="1.0" encoding="utf-8"?>
+    const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
 <UploadSiteHostedPicturesRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials>
-    <ebl:eBayAuthToken xmlns:ebl="urn:ebay:apis:eBLBaseComponents">${userToken}</ebl:eBayAuthToken>
+    <eBayAuthToken>${escapeXml(tokens.accessToken)}</eBayAuthToken>
   </RequesterCredentials>
-  <PictureSet>Standard</PictureSet>
+  <PictureName>${escapeXml(filename)}</PictureName>
+  <PictureData contentType="${escapeXml(mimeType)}">${base64}</PictureData>
 </UploadSiteHostedPicturesRequest>`;
 
-    form.append('XML Payload', xmlRequest, { contentType: 'text/xml' });
-
-    const response = await axios.post(EBAY_EPS_URL, form, {
+    const response = await axios.post<string>(EBAY_EPS_URL, xmlBody, {
       headers: {
-        ...form.getHeaders(),
         'X-EBAY-API-CALL-NAME': 'UploadSiteHostedPictures',
         'X-EBAY-API-SITEID': '0',
         'X-EBAY-API-COMPATIBILITY-LEVEL': '967',
+        'X-EBAY-API-APP-NAME': process.env.EBAY_APP_ID ?? '',
+        'X-EBAY-API-DEV-NAME': process.env.EBAY_DEV_ID ?? '',
+        'X-EBAY-API-CERT-NAME': process.env.EBAY_CERT_ID ?? '',
+        'Content-Type': 'text/xml',
       },
     });
 
-    const parsed = await xml2js.parseStringPromise(response.data as string);
-    const pictureUrl =
-      parsed?.UploadSiteHostedPicturesResponse?.SiteHostedPictureDetails?.[0]
-        ?.FullURL?.[0];
-
-    if (!pictureUrl) {
-      throw new Error(`Failed to get picture URL for ${file}`);
+    // Parse the FullURL from the XML response
+    const match = /<FullURL>(.*?)<\/FullURL>/.exec(response.data);
+    if (!match) {
+      throw new Error(`Failed to parse eBay EPS URL for ${filename}. Response: ${response.data}`);
     }
 
-    urls.push(pictureUrl as string);
-    console.log(`  ✅ ${file} → ${pictureUrl}`);
+    results.push({ localPath, ebayUrl: match[1] });
+    console.log(`[upload-images] Uploaded ${filename} -> ${match[1]}`);
   }
 
-  // Save URLs
-  const urlsPath = path.resolve(process.cwd(), 'output', 'fourfront-image-urls.json');
-  fs.writeFileSync(urlsPath, JSON.stringify(urls, null, 2));
-  console.log(`\n✅ Uploaded ${urls.length} images. Saved to ${urlsPath}`);
-
-  return urls;
+  return results;
 }

@@ -3,4 +3,4 @@ dist/
 .env
 photos/
 output/
-*.json.bak
+*.log

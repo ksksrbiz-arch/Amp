@@ -1,0 +1,156 @@
+# AMP-Kohler Liquidation — Runbook
+
+**Owner:** Keith J. Skaggs Jr. / 1Commerce LLC  
+**Goal:** One-shot automation to liquidate 4 sealed AMP-Kohler units:  
+- eBay (FOURFRONT 9250 only) + manual-paste copy for FB/CL/OfferUp/Mercari (all 4 units)  
+- Lead routing into Linear via Gmail filters + Netlify Function  
+**Target:** Listings live within 90 minutes of photos being available.
+
+---
+
+## Pre-flight checklist
+
+- [ ] Copy `.env.example` → `.env` and fill in all values
+- [ ] Obtain eBay OAuth2 tokens (see [eBay token instructions](#ebay-tokens))
+- [ ] Set up Gmail OAuth2 credentials (Google Cloud Console)
+- [ ] Create Linear project "AMP Liquidation" and paste the project ID into `.env`
+- [ ] Create Stripe account + secret key
+- [ ] Drop photos into `photos/<slug>/` directories (JPEG or PNG, max 10 per unit)
+
+---
+
+## Setup
+
+```bash
+cd tools/amp-liquidation
+cp .env.example .env
+# fill in .env
+
+npm install
+```
+
+---
+
+## Running the automation
+
+```bash
+npm start
+```
+
+This runs all phases in sequence:
+
+### Phase 1 — AI Copy Generation
+- Analyzes photos in `photos/<slug>/` using Anthropic Claude vision
+- Generates per-channel marketing copy for each unit
+- Writes markdown bundles to `output/<slug>.md`
+
+### Phase 2 — eBay Automation (FOURFRONT only)
+- Refreshes eBay OAuth2 token
+- Uploads photos to eBay EPS (eBay Picture Services)
+- Creates an eBay Sell API inventory item + offer
+- Publishes the offer (listing goes live)
+
+### Phase 3 — Lead Routing
+- Creates Stripe payment links for all 4 units
+- Creates Gmail filters to label inbound inquiries by unit
+- Starts an Express webhook server on port 3001 for Linear issue creation
+- (optional) Run `gmail-poller` on a cron to forward Gmail leads to Linear
+
+---
+
+## Manual paste channels (FB / CL / OfferUp / Mercari)
+
+After Phase 1 completes, open `output/<slug>.md` for each unit and copy the
+per-channel section into the respective platform's listing form.
+
+---
+
+## eBay tokens
+
+1. Register an eBay developer account at https://developer.ebay.com
+2. Create a production application and note `EBAY_APP_ID`, `EBAY_DEV_ID`, `EBAY_CERT_ID`
+3. Set `EBAY_RUNAME` to the RuName for your OAuth2 redirect URI
+4. Complete the OAuth2 Authorization Code flow to obtain `EBAY_USER_TOKEN` and `EBAY_REFRESH_TOKEN`
+5. Required scope: `https://api.ebay.com/oauth/api_scope/sell.inventory`
+
+The tool automatically refreshes the access token at runtime via `phase2-ebay/auth.ts`.
+
+---
+
+## Gmail OAuth2
+
+1. Go to Google Cloud Console → APIs & Services → Credentials
+2. Create an OAuth2 client (Desktop app type)
+3. Enable the Gmail API
+4. Complete the OAuth2 flow once to obtain `GMAIL_REFRESH_TOKEN`
+5. Paste `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN` into `.env`
+
+---
+
+## Netlify Function — `amp-lead`
+
+Deploy this repo to Netlify to enable the lead-intake form endpoint.
+
+Set the following environment variables in Netlify:
+- `LINEAR_API_KEY`
+- `LINEAR_TEAM_ID`
+- `LINEAR_PROJECT_ID`
+
+The function endpoint will be:
+```
+POST https://<your-site>.netlify.app/.netlify/functions/amp-lead
+```
+
+Body (JSON):
+```json
+{
+  "name": "Jane Doe",
+  "email": "jane@example.com",
+  "phone": "503-555-0100",
+  "message": "Is the generator still available?",
+  "slug": "generator",
+  "channel": "fb"
+}
+```
+
+---
+
+## Unit reference
+
+| Slug | Model | MSRP | Target | Floor | eBay? |
+|------|-------|------|--------|-------|-------|
+| compressor | AKAC120 – 8-Gal Twin Tank Gas Compressor | $1,599 | $899 | $640 | No |
+| pump | AKWP30 – 3" Semi-Trash Water Pump | $975 | $599 | $390 | No |
+| generator | AK10KRS – 10,000W Portable Gas Generator | $3,250 | $1,895 | $1,300 | No |
+| fourfront | FOURFRONT 9250 – 4-in-1 | $13,795 | $6,500 | $4,800 | **Yes** |
+
+---
+
+## Directory layout
+
+```
+tools/amp-liquidation/
+├── .env.example
+├── .gitignore
+├── package.json
+├── tsconfig.json
+├── README.md
+└── src/
+    ├── config/
+    │   └── units.ts
+    ├── phase1-copy/
+    │   ├── analyze-photos.ts
+    │   ├── generate-copy.ts
+    │   └── render-bundle.ts
+    ├── phase2-ebay/
+    │   ├── auth.ts
+    │   ├── upload-images.ts
+    │   ├── create-listing.ts
+    │   └── publish.ts
+    ├── phase3-routing/
+    │   ├── stripe-link.ts
+    │   ├── gmail-filters.ts
+    │   ├── linear-webhook.ts
+    │   └── gmail-poller.ts
+    └── index.ts
+```

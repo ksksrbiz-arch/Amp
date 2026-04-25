@@ -95,12 +95,17 @@ The tool automatically refreshes the access token at runtime via `phase2-ebay/au
 
 ## Netlify Function — `amp-lead`
 
-Deploy this repo to Netlify to enable the lead-intake form endpoint.
+`tools/amp-liquidation/netlify/functions/amp-lead.ts` receives lead payloads
+forwarded from Gmail (alias-based routing) and:
+1. Creates a Linear issue with the appropriate priority for the unit
+2. Looks up (or creates) a Stripe payment link for the unit
+3. Returns `{ issueUrl, paymentLink }`
 
 Set the following environment variables in Netlify:
 - `LINEAR_API_KEY`
 - `LINEAR_TEAM_ID`
 - `LINEAR_PROJECT_ID`
+- `STRIPE_SECRET_KEY`
 
 The function endpoint will be:
 ```
@@ -110,14 +115,15 @@ POST https://<your-site>.netlify.app/.netlify/functions/amp-lead
 Body (JSON):
 ```json
 {
-  "name": "Jane Doe",
-  "email": "jane@example.com",
-  "phone": "503-555-0100",
-  "message": "Is the generator still available?",
-  "slug": "generator",
-  "channel": "fb"
+  "from": "buyer@example.com",
+  "subject": "Is the generator still available?",
+  "body": "Hi — I'd like to come pick this up this weekend.",
+  "toAlias": "amp-generator-fb@1commercesolutions.com"
 }
 ```
+
+The function parses `toAlias` to extract `<unit>` and `<channel>` from
+`amp-<unit>-<channel>@…`, so set up Gmail aliases or `+`-tags accordingly.
 
 ---
 
